@@ -452,12 +452,41 @@ const stopBtn = document.getElementById('stopBtn');
 cameraModeBtn.addEventListener('click', startCamera);
 stopBtn.addEventListener('click', stopCamera);
 
-const scanConfig = { fps: 10, qrbox: { width: 220, height: 220 }, aspectRatio: 1.0 };
+/* Responsive scan box: sizes itself to the live viewfinder so the
+   scan region is always valid. A FIXED qrbox (e.g. 220x220) can be
+   larger than the rendered video on small screens, which makes the
+   scan region invalid and the camera never detects a QR code. */
+function qrboxFn(viewfinderWidth, viewfinderHeight) {
+  const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+  const size = Math.max(150, Math.floor(minEdge * 0.75));
+  return { width: size, height: size };
+}
+const scanConfig = { fps: 10, qrbox: qrboxFn, aspectRatio: 1.0 };
 
 function onScanSuccess(decodedText) {
   showResult(decodedText);
   stopCamera();
 }
+
+/* Try a single camera source; resolves true on success, false on failure.
+   A fresh Html5Qrcode instance is used per attempt so a failed start
+   never leaves the previous instance in a broken "transition" state. */
+async function tryStart(cameraSource) {
+  try {
+    html5QrCode = new Html5Qrcode('reader');
+    await html5QrCode.start(cameraSource, scanConfig, onScanSuccess, () => {});
+    isScanning = true;
+    return true;
+  } catch (err) {
+    lastStartError = err;
+    // make sure a half-initialized instance is cleaned up
+    try { if (html5QrCode) await html5QrCode.clear(); } catch (e) {}
+    html5QrCode = null;
+    return false;
+  }
+}
+
+let lastStartError = null;
 
 async function startCamera() {
   clearError();
@@ -465,50 +494,49 @@ async function startCamera() {
 
   // getUserMedia only works on secure contexts (https or localhost)
   if (!window.isSecureContext && location.hostname !== 'localhost') {
-    showError('⚠️ Camera needs a secure (HTTPS) page. Open this file from an HTTPS host (e.g. GitLab Pages) or use "Select QR from Gallery".');
+    showError('⚠️ Camera needs a secure (HTTPS) page. Open this site over HTTPS (e.g. GitHub Pages) or use "Select QR from Gallery".');
     return;
   }
 
-  html5QrCode = new Html5Qrcode('reader');
   scannerWrap.classList.add('active');
   stopRow.style.display = 'flex';
+  lastStartError = null;
 
+  // Build an ordered list of camera sources to attempt.
+  const attempts = [];
+
+  // 1) Try to enumerate cameras and prefer a rear/back camera by id.
   try {
-    // STEP 1: try to list cameras and pick the rear one
-    let cameraId = null;
-    try {
-      const cameras = await Html5Qrcode.getCameras();
-      if (cameras && cameras.length) {
-        const back = cameras.find(c => /back|rear|environment/i.test(c.label));
-        cameraId = (back || cameras[cameras.length - 1]).id;
-      }
-    } catch (e) { /* enumeration may fail before permission is granted */ }
+    const cameras = await Html5Qrcode.getCameras();
+    if (cameras && cameras.length) {
+      const back = cameras.find(c => /back|rear|environment/i.test(c.label));
+      if (back) attempts.push(back.id);
+      // last camera is often the rear one on phones
+      const last = cameras[cameras.length - 1];
+      if (!back || last.id !== back.id) attempts.push(last.id);
+    }
+  } catch (e) { /* enumeration can fail before permission is granted */ }
 
-    if (cameraId) {
-      // STEP 2a: start with the explicit rear camera id
-      await html5QrCode.start(cameraId, scanConfig, onScanSuccess, () => {});
-    } else {
-      // STEP 2b: fall back to facingMode environment
-      await html5QrCode.start({ facingMode: 'environment' }, scanConfig, onScanSuccess, () => {});
-    }
-    isScanning = true;
-  } catch (err) {
-    // STEP 3: last-resort fallback to ANY available camera
-    try {
-      await html5QrCode.start({ facingMode: 'user' }, scanConfig, onScanSuccess, () => {});
-      isScanning = true;
-    } catch (err2) {
-      scannerWrap.classList.remove('active');
-      stopRow.style.display = 'none';
-      const name = (err2 && err2.name) || '';
-      if (name === 'NotAllowedError') {
-        showError('⚠️ Camera permission was denied. Allow camera access in your browser, or use "Select QR from Gallery".');
-      } else if (name === 'NotFoundError') {
-        showError('⚠️ No camera found on this device. Please use "Select QR from Gallery".');
-      } else {
-        showError('⚠️ Could not start the camera. Please use "Select QR from Gallery" instead.');
-      }
-    }
+  // 2) Generic facingMode fallbacks (work even without enumeration).
+  attempts.push({ facingMode: 'environment' });
+  attempts.push({ facingMode: 'user' });
+
+  // Try each source until one starts successfully.
+  for (const source of attempts) {
+    const ok = await tryStart(source);
+    if (ok) return;
+  }
+
+  // Nothing worked: clean up UI and show a friendly, specific message.
+  scannerWrap.classList.remove('active');
+  stopRow.style.display = 'none';
+  const name = (lastStartError && lastStartError.name) || '';
+  if (name === 'NotAllowedError') {
+    showError('⚠️ Camera permission was denied. Allow camera access in your browser settings, then try again — or use "Select QR from Gallery".');
+  } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+    showError('⚠️ No usable camera was found on this device. Please use "Select QR from Gallery".');
+  } else {
+    showError('⚠️ Could not start the camera. Make sure no other app is using it, then retry — or use "Select QR from Gallery".');
   }
 }
 
