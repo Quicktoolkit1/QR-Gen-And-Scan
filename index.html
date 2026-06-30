@@ -179,14 +179,6 @@
   #reader { width: 100%; height: 100%; }
   #reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
 
-  .laser {
-    position: absolute; left: 6%; right: 6%; height: 3px; border-radius: 3px;
-    background: linear-gradient(90deg, transparent, #22d3ee, #22d3ee, transparent);
-    box-shadow: 0 0 14px 3px rgba(34, 211, 238, 0.8);
-    animation: scanMove 2.4s ease-in-out infinite; pointer-events: none;
-  }
-  @keyframes scanMove { 0% { top: 8%; } 50% { top: 90%; } 100% { top: 8%; } }
-
   .result-box { margin-top: 20px; display: none; }
   .result-box.active { display: block; }
   textarea {
@@ -276,7 +268,6 @@
 
       <div class="scanner-wrap" id="scannerWrap">
         <div id="reader"></div>
-        <div class="laser"></div>
       </div>
 
       <div class="row" id="stopRow" style="display:none">
@@ -461,7 +452,18 @@ function qrboxFn(viewfinderWidth, viewfinderHeight) {
   const size = Math.max(150, Math.floor(minEdge * 0.75));
   return { width: size, height: size };
 }
-const scanConfig = { fps: 10, qrbox: qrboxFn, aspectRatio: 1.0 };
+const scanConfig = {
+  fps: 10,
+  qrbox: qrboxFn,
+  aspectRatio: 1.0,
+  // Focus only on QR codes for faster, cleaner detection (fewer false reads)
+  formatsToSupport: (typeof Html5QrcodeSupportedFormats !== 'undefined')
+    ? [Html5QrcodeSupportedFormats.QR_CODE]
+    : undefined,
+  // Use the device's native barcode detector when available — much more
+  // accurate and reliable than the JS fallback
+  experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+};
 
 function onScanSuccess(decodedText) {
   showResult(decodedText);
